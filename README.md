@@ -18,7 +18,11 @@ Please note that although the workflows are tested prior to their deposition her
 
 ### frustratometer.py
 
-###
+### smina_screen.py
+
+### retrieve_struct_batch.py
+
+### pm_screen.py
 
 ## How to run the workflows?
 
