@@ -26,7 +26,7 @@ Please note that although the workflows are tested prior to their deposition her
 
 ## How to run the workflows?
 
-Clone the repository, learn more about each workflow by typing ```python <workflow_filename>.py -h```, and follow the instructions printed on the screen.
+Clone the repository, type ```python <workflow_path>.py -h```, and follow the instructions printed on the screen.
 
 ## Questions and comments
 
