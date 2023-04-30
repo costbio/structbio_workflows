@@ -4,7 +4,7 @@ This is a repository of structural bioinformatics workflows, designed for tasks 
 
 The workflows include Python scripts which can be run from the Linux terminal. 
 
-Please note that although the workflows are tested prior to their deposition here, they are not meant to be used "as is". We only provide these for convenience to those who intend to perform similar tasks for their own projects. 
+Please note that although the workflows are tested prior to their deposition here, they have not been designed with end users in mind. We only provide these for convenience to those who intend to perform similar tasks for their own projects. 
 
 ## List of workflows:
 
@@ -14,6 +14,16 @@ Please note that although the workflows are tested prior to their deposition her
 
 ### md_traj_analysis.py
 
+### pandora.py
+
+### frustratometer.py
+
+###
+
 ## How to run the workflows?
 
-** Work in progress **
+Clone the repository, learn more about each workflow by typing ```python <workflow_filename>.py -h```, and follow the instructions printed on the screen.
+
+## Questions and comments
+
+Please reach out to me (Onur Serçinoğlu) in case you have any questions or comments regarding these workflows. 
