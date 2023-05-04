@@ -11,6 +11,9 @@ Please note that although the workflows are tested prior to their deposition her
 ### dss.py
 
 ### dss_analysis.py
+A workflow that parses binding pockets predicted by DoGSiteScorer 2 from a biomolecular simulation trajectory/structural ensemble, and generates a clustermap showing residues forming different pockets on protein surface. 
+
+This clustermap provides a visualization of potential druggable binding pockets and their persistence within the content of native state dynamics of the target protein. This may be useful for selection of potentially allosteric or cryptic binding pockets on protein structures.
 
 ### md_traj_analysis.py
 
@@ -24,9 +27,9 @@ Please note that although the workflows are tested prior to their deposition her
 
 ### pm_screen.py
 
-## How to run the workflows?
+## How to use the workflows?
 
-Clone the repository, type ```python <workflow_path>.py -h```, and follow the instructions printed on the screen.
+Clone the repository, open the file using Jupyter Notebook/JupyterLab or your favorite IDE (e.g. VSCode), install any dependencies required (using either pip or conda), modify the file names as needed.
 
 ## Questions and comments
 
