@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib
 import seaborn as sns
 import biotite.structure.io.pdb as pdb
+import scipy.cluster.hierarchy as sch
 
 # %%
 # Get a list of all *_desc.txt files with their full path in the directory 2021_09_21_charmmGUI_norA_splitPDB_dss
@@ -165,12 +166,53 @@ df_pockets_ds_05_wpr_pocket_res = df_pockets_ds_05_wpr_pocket_res.loc[:, (df_poc
 # Remove columns that include zeros for more than 90% of the rows
 df_pockets_ds_05_wpr_pocket_res = df_pockets_ds_05_wpr_pocket_res.loc[:, (df_pockets_ds_05_wpr_pocket_res == 0).mean() < 0.9]
 
-# Print number of columns
-print(df_pockets_ds_05_wpr_pocket_res.shape[1])
+# Remove rows that include zeros for more than 90% of the columns
+# Calculate the percentage of zeros in each row
+zeros_percent = (df_pockets_ds_05_wpr_pocket_res == 0).sum(axis=1) / df_pockets_ds_05_wpr_pocket_res.shape[1]
 
-# %%
-df_pockets_ds_05_wpr_pocket_res
+# Filter out rows with more than 90% of zeros
+df_pockets_ds_05_wpr_pocket_res = df_pockets_ds_05_wpr_pocket_res[zeros_percent < 0.9]
 
 # %%
 # Cluster the rows in df_pockets_ds_05_wpr_pocket_res based on all columns except the first column using seaborn.clustermap
-sns.clustermap(df_pockets_ds_05_wpr_pocket_res.iloc[:,1:], metric='euclidean', method='ward', cmap='Blues', figsize=(20,20))
+g = sns.clustermap(df_pockets_ds_05_wpr_pocket_res.iloc[:,1:], metric='euclidean', method='ward', cmap='Blues', figsize=(20,20))
+
+# retrieve clusters using fcluster 
+#d = sch.distance.pdist(df_pockets_ds_05_wpr_pocket_res.iloc[:,1:])
+#L = sch.linkage(d, method='ward')
+L = g.dendrogram_row.linkage
+# 0.2 can be modified to retrieve more stringent or relaxed clusters
+clusters = sch.fcluster(L, 200, 'distance')
+
+print('number of clusters: ', len(np.unique(clusters)))
+# clusters indices correspond to incides of original df
+
+df_index = []
+cluster_no = []
+
+for i,cluster in enumerate(clusters):
+    print(df_pockets_ds_05_wpr_pocket_res.index[i], cluster)
+    df_index.append(df_pockets_ds_05_wpr_pocket_res.index[i])
+    cluster_no.append(cluster)
+
+df_index_clusters = pandas.DataFrame(list(zip(df_index,clusters)),columns=['Index','cluster_no'])
+
+# %% 
+# For each cluster, get the number of rows in df_pockets_ds_05_wpr_pocket_res that belong to this cluster
+for cluster in np.unique(clusters):
+    df_index_cluster = df_index_clusters[df_index_clusters['cluster_no'] == cluster]
+    index_cluster = df_index_cluster['Index'].tolist()
+
+    # Get the rows in df_pockets_ds_05_wpr that belong to this cluster
+    df_pockets_ds_05_wpr_cluster = df_pockets_ds_05_wpr[df_pockets_ds_05_wpr.index.isin(index_cluster)]
+
+    # Get the rows in df_pockets_ds_05_wpr_pocket_res that belong to this cluster
+    #df_pockets_ds_05_wpr_pocket_res_cluster = df_pockets_ds_05_wpr_pocket_res[df_pockets_ds_05_wpr_pocket_res.index.isin(index_cluster)]
+
+    # Sort the rows in df_pockets_ds_05_wpr_cluster by descending value of Druggability Score
+    # These may be used as representatives of the cluster, and potential pockets for drug design
+    df_pockets_ds_05_wpr_cluster = df_pockets_ds_05_wpr_cluster.sort_values(by='drugScore',ascending=False)
+    print('cluster no: ', cluster)
+    print('frame: ', df_pockets_ds_05_wpr_cluster['frame'].tolist()[0])
+    print('pocket_res: ', df_pockets_ds_05_wpr_cluster['pocket_res'].tolist()[0])
+    print('drugScore: ', df_pockets_ds_05_wpr_cluster['drugScore'].tolist()[0])
