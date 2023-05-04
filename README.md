@@ -29,7 +29,7 @@ This clustermap provides a visualization of potential druggable binding pockets 
 
 ## How to use the workflows?
 
-Clone the repository, open the file using Jupyter Notebook/JupyterLab or your favorite IDE (e.g. VSCode), install any dependencies required (using either pip or conda), modify the file names as needed.
+Clone the repository, open the file using Jupyter Notebook/JupyterLab or your favorite IDE (e.g. VSCode), install any dependencies required (using either pip or conda), modify the code as needed.
 
 ## Questions and comments
 
