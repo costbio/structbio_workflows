@@ -9,6 +9,7 @@ Please note that although the workflows are tested prior to their deposition her
 ## List of workflows:
 
 ### dss.py
+**in progress**
 
 ### dss_analysis.py
 A workflow that parses binding pockets predicted by DoGSiteScorer 2 from a biomolecular simulation trajectory/structural ensemble, and generates a clustermap showing residues forming different pockets on protein surface. 
@@ -16,16 +17,22 @@ A workflow that parses binding pockets predicted by DoGSiteScorer 2 from a biomo
 This clustermap provides a visualization of potential druggable binding pockets and their persistence within the content of native state dynamics of the target protein. This may be useful for selection of potentially allosteric or cryptic binding pockets on protein structures.
 
 ### md_traj_analysis.py
+**in progress**
 
 ### pandora.py
+**in progress**
 
 ### frustratometer.py
+**in progress**
 
 ### smina_screen.py
+**in progress**
 
 ### retrieve_struct_batch.py
+**in progress**
 
 ### pm_screen.py
+**in progress**
 
 ## How to use the workflows?
 
