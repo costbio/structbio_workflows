@@ -87,7 +87,7 @@ with Pool(ncores) as p:
 # Save df_pockets to a CSV file
 # ds_05: drugScore > 0.5
 # wpr: with pocket residues
-df_pockets.to_csv('df_pockets_ds_05_wpr.csv', index=False)
+df_pockets.to_csv('df_pockets_ds_05_wpr.csv', index=True)
 
 
 # %%
