@@ -28,7 +28,7 @@ This clustermap provides a visualization of potential druggable binding pockets 
 **in progress**
 
 ### smina_screen.py
-**in progress**
+A parallelized workflow that takes an SDF file containing potential ligand molecules, a PDB file including pocket amino acids, and a PDB file containing receptor structures as input, and runs molecular docking simulations using smina. The results are returned in a single SDF file containing binding poses, and a data frame containing docking scores.
 
 ### pm_screen.py
 A parallelized workflow that takes a list of gene names as input, retrieves PDB structures and AlphaFold2 models of each protein encoded by these genes, detects binding pockets using DoGSiteScorer 2, and computes similarities between these binding pockets using PocketMatch. 
