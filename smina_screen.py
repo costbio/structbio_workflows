@@ -40,7 +40,7 @@ pdb_to_pdbqt(receptor_fn+".pdb", receptor_fn+".pdbqt")
 
 #%%
 structure_df = DataFrame.from_file("frame_2152_res_P_2_1.pdb")
-positions = np.array([structure_df["atom.y"].values,structure_df["atom.x"].values,structure_df["atom.z"].values])
+positions = np.array([structure_df["atom.x"].values,structure_df["atom.y"].values,structure_df["atom.z"].values])
 pocket_center = list(map(str,((np.max(positions,axis=1) + np.min(positions,axis=1)) / 2)))
 pocket_size = list(map(str,((np.max(positions,axis=1) - np.min(positions,axis=1)) + 5)))
 
