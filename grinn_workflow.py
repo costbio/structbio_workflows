@@ -666,19 +666,25 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
     gmx_env_vars = source_gmxrc(gmxrc_path)
     #print("GROMACS_DIR:", gmx_env_vars.get("GROMACS_DIR"))
 
-    # If source_sel is None, set it to "all"
+    # If source_sel is None, set it to an appropriate selection
     if source_sel is None:
         source_sel = "not water and not resname SOL and not ion"
 
-    # If target_sel is None, set it to "all"
+    # If target_sel is None, set it to an appropriate selection
     if target_sel is None:
         target_sel = "not water and not resname SOL and not ion"
 
-    if type(source_sel) == list and len(source_sel) > 1:
-        source_sel = ' '.join(source_sel)
+    if type(source_sel) == list:
+        if len(source_sel) > 1:
+            source_sel = ' '.join(source_sel)
+        else:
+            source_sel = source_sel[0]
 
-    if type(target_sel) == list and len(target_sel) > 1:
-        target_sel = ' '.join(target_sel)
+    if type(target_sel) == list:
+        if len(target_sel) > 1:
+            target_sel = ' '.join(target_sel)
+        else:
+            target_sel = target_sel[0]
 
     logger = create_logger(out_folder, noconsole_handler)
     logger.info('### gRINN workflow started ###')
