@@ -64,7 +64,7 @@ def create_logger(outFolder, noconsoleHandler=False):
     return logger
 
 # %%
-def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder, solvate, npt, logger, nt=1):
+def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt=1):
     """
     Run a GROMACS simulation workflow.
 
@@ -72,6 +72,7 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
     - pdb_filepath (str): The path to the input PDB file.
     - mdp_files_folder (str): The folder containing the MDP files.
     - out_folder (str): The folder where output files will be saved.
+    - nofixpdb (bool): Whether to fix the PDB file using pdbfixer (default is True).
     - logger (logging.Logger): The logger object for logging messages.
     - nt (int): Number of threads for GROMACS commands (default is 1).
     - ff_folder (str): The folder containing the force field files (default is None).
@@ -85,21 +86,24 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
 
     logger.info(f"Running GROMACS simulation for PDB file: {pdb_filepath}")
 
+    if nofixpdb:
+        fixed_pdb_filepath = pdb_filepath
+    else:
     # Fix PDB file
-    fixer = PDBFixer(filename=pdb_filepath)
-    fixer.findMissingResidues()
-    fixer.findNonstandardResidues()
-    fixer.replaceNonstandardResidues()
-    fixer.removeHeterogens()
-    fixer.findMissingAtoms()
-    fixer.addMissingAtoms()
-    fixer.addMissingHydrogens(7.0)
-    pdb_filename = os.path.basename(pdb_filepath)
-    fixed_pdb_filepath = os.path.join(out_folder, "protein.pdb")
-    PDBFile.writeFile(fixer.topology, fixer.positions, open(fixed_pdb_filepath, 'w'))
-    logger.info("PDB file fixed.")
-    system = parsePDB(fixed_pdb_filepath)
-    writePDB(fixed_pdb_filepath, system.select('protein'))
+        fixer = PDBFixer(filename=pdb_filepath)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.replaceNonstandardResidues()
+        fixer.removeHeterogens()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+        pdb_filename = os.path.basename(pdb_filepath)
+        fixed_pdb_filepath = os.path.join(out_folder, "protein.pdb")
+        PDBFile.writeFile(fixer.topology, fixer.positions, open(fixed_pdb_filepath, 'w'))
+        logger.info("PDB file fixed.")
+        system = parsePDB(fixed_pdb_filepath)
+        writePDB(fixed_pdb_filepath, system.select('protein'))
 
     if ff_folder is not None:
         ff = ff_folder
@@ -112,11 +116,68 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
                         p=os.path.join(out_folder, "topol.top"), i=os.path.join(out_folder,"posre.itp"),
                           ff=ff, water="tip3p", heavyh=True, ignh=True)
         logger.info("pdb2gmx command completed.")
-        shutil.copy(os.path.join(out_folder, "topol.top"), os.path.join(out_folder, "topol_protein.top"))
-        logger.info("Topology file copied.")
+        next_pdb = "protein.pdb"
 
-        source_folder = os.getcwd()
-        files = os.listdir(source_folder)
+        if lig:
+            logger.info("Running ligand mode...")
+            lig_itp_outfolder_path = os.path.join(out_folder, "ligand.itp")
+            lig_itp_outfolder_path = os.path.abspath(lig_itp_outfolder_path)
+            lig_gro_outfolder_path = os.path.join(out_folder, "ligand.gro")
+            lig_gro_outfolder_path = os.path.abspath(lig_gro_outfolder_path)
+            lig_pdb_outfolder_path = os.path.join(out_folder, "ligand.pdb")
+            lig_pdb_outfolder_path = os.path.abspath(lig_pdb_outfolder_path)
+            shutil.copy(lig_gro_file, lig_gro_outfolder_path)
+            shutil.copy(lig_itp_file, lig_itp_outfolder_path)
+            logger.info("Ligand gro and itp files copied.")
+            # Convert gro of ligand to pdb
+            gromacs.editconf(f=lig_gro_outfolder_path, o=lig_pdb_outfolder_path)
+            logger.info("Ligand gro file converted to pdb.")
+            # Create protein-ligand complex
+            protein = parsePDB(os.path.join(out_folder, "protein.pdb"))
+            ligand = parsePDB(os.path.join(out_folder, "ligand.pdb"))
+            lig_chids = ligand.getChids()
+            lig_code = ligand.getResnames()[0]
+            # Set "Z" as chain ID for ligand as a chain id is required in later stages of the workflow.
+            ligand.setChids(['Z']*len(lig_chids))
+            complex = protein + ligand
+            writePDB(os.path.join(out_folder, "complex.pdb"), complex)
+            logger.info("Protein-ligand complex created.")
+
+            # Supplement topology file with ligand topology
+            f = open(os.path.join(out_folder, "topol.top"), "r")
+            topol_lines = f.readlines()
+            f.close()
+            write_flag = False
+            stop_write = False
+            new_lines = list()
+            for line in topol_lines:
+                new_lines.append(line)
+                if line.startswith("#include"):
+                    write_flag = True
+                if write_flag and not stop_write:
+                    new_lines.append(f"#include \"{lig_itp_outfolder_path}\"\n")
+                    write_flag = False
+                    stop_write = True
+
+            new_lines.append(f"{lig_code}     1\n")
+
+            f = open(os.path.join(out_folder, "topol.top"), "w")
+            f.writelines(new_lines)
+            f.close()
+            logger.info("Supplemented topology file with ligand topology.")
+
+            next_pdb = "complex.pdb"
+
+            # Create the name of the group for the protein+ligand complex for the index file.
+            index_group_select = f'"Protein" | "{lig_code}"'
+            index_group_name = f"Protein_{lig_code}"
+        
+        gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=(index_group_select,'q'))
+        
+        shutil.copy(os.path.join(out_folder, "topol.top"), os.path.join(out_folder, "topol_dry.top"))
+        logger.info("Topology file copied.")
+        #source_folder = os.getcwd()
+        #files = os.listdir(source_folder)
 
         # Filter files starting with "posre" and ending with ".itp"
         #posre_files = [file for file in files if file.startswith("posre") and file.endswith(".itp")]
@@ -127,17 +188,19 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
         #    shutil.move(source_file_path, dest_file_path)
         
         if solvate:
-            gromacs.editconf(f=os.path.join(out_folder, "protein.pdb"), o=os.path.join(out_folder, "boxed.pdb"), bt="cubic", c=True, d=1.0, princ=True, input="Protein")
+            gromacs.editconf(f=os.path.join(out_folder, next_pdb), n=os.path.join(out_folder, "index.ndx"), 
+                             o=os.path.join(out_folder, "boxed.pdb"), bt="cubic", c=True, d=1.0, princ=True, input=('0','0','0'))
             logger.info("editconf command completed.")
             gromacs.solvate(cp=os.path.join(out_folder, "boxed.pdb"), cs="spc216", p=os.path.join(out_folder, "topol.top"), o=os.path.join(out_folder, "solvated.pdb"))
             logger.info("solvate command completed.")
             gromacs.grompp(f=os.path.join(mdp_files_folder, "ions.mdp"), c=os.path.join(out_folder, "solvated.pdb"), p=os.path.join(out_folder, "topol.top"), o=os.path.join(out_folder, "ions.tpr"))
             logger.info("grompp for ions command completed.")
-            gromacs.genion(s=os.path.join(out_folder, "ions.tpr"), o=os.path.join(out_folder, "solvated_ions.pdb"), p=os.path.join(out_folder, "topol.top"), neutral=True, conc=0.15, input=('13','q'))
+            gromacs.genion(s=os.path.join(out_folder, "ions.tpr"), o=os.path.join(out_folder, "solvated_ions.pdb"), p=os.path.join(out_folder, "topol.top"), neutral=True, conc=0.15, input=('SOL','q'))
             logger.info("genion command completed.")
             next_pdb = "solvated_ions.pdb"
         else:
-            gromacs.editconf(f=os.path.join(out_folder, "protein.pdb"), o=os.path.join(out_folder, "boxed.pdb"), bt="cubic", c=True, box=[999,999,999], princ=True, input="Protein")
+            gromacs.editconf(f=os.path.join(out_folder, next_pdb), n=os.path.join(out_folder, 'index.ndx'), 
+                             o=os.path.join(out_folder, "boxed.pdb"), bt="cubic", c=True, box=[999,999,999], princ=True, input=(index_group_name, index_group_name, index_group_name))
             logger.info("editconf command completed.")
             next_pdb = "boxed.pdb"
         
@@ -157,25 +220,28 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
         gromacs.trjconv(f=os.path.join(out_folder,next_pdb),o=os.path.join(out_folder, "traj.xtc"))
 
         if npt:
-            gromacs.grompp(f=os.path.join(mdp_files_folder, "npt.mdp"), c=os.path.join(out_folder, next_pdb), r=os.path.join(out_folder, next_pdb), p=os.path.join(out_folder, "topol.top"), o=os.path.join(out_folder, "npt.tpr"), maxwarn=10)
+            gromacs.grompp(f=os.path.join(mdp_files_folder, "npt.mdp"), c=os.path.join(out_folder, next_pdb), 
+                           r=os.path.join(out_folder, next_pdb), p=os.path.join(out_folder, "topol.top"), o=os.path.join(out_folder, "npt.tpr"), maxwarn=10)
             logger.info("grompp for NPT command completed.")
             gromacs.mdrun(deffnm="npt", v=True, c=os.path.join(out_folder, "npt.pdb"), s=os.path.join(out_folder,"npt.tpr"), nt=nt, pin='on', 
             x=os.path.join(out_folder, "npt.xtc"), e=os.path.join(out_folder, "npt.edr"), o=os.path.join(out_folder, "npt.trr"))
             logger.info("mdrun for NPT command completed.")
-            gromacs.trjconv(f=os.path.join(out_folder, 'npt.pdb'),o=os.path.join(out_folder, 'npt.pdb'),s=os.path.join(out_folder, 'solvated_ions.pdb'), input=('0','q'))
+            gromacs.trjconv(f=os.path.join(out_folder, 'npt.pdb'), o=os.path.join(out_folder, 'npt.pdb'), s=os.path.join(out_folder, 'solvated_ions.pdb'), input=('0','q'))
             logger.info("trjconv for NPT command completed.")
-            gromacs.trjconv(s=os.path.join(out_folder, 'npt.tpr'), f=os.path.join(out_folder, 'npt.xtc'), o=os.path.join(out_folder, 'traj.xtc'), input=('1',))
+            gromacs.trjconv(s=os.path.join(out_folder, 'npt.tpr'), f=os.path.join(out_folder, 'npt.xtc'), o=os.path.join(out_folder, 'traj.xtc'), input=(index_group_name,))
             logger.info("trjconv for NPT to XTC conversion command completed.")
-            gromacs.make_ndx(f=os.path.join(out_folder, 'npt.pdb'), o=os.path.join(out_folder, 'index.ndx'), input=('q',))
-            logger.info("make_ndx command completed.")
-            gromacs.trjconv(f=os.path.join(out_folder, 'npt.pdb'), o=os.path.join(out_folder, 'system.pdb'), s=os.path.join(out_folder, next_pdb), n=os.path.join(out_folder, 'index.ndx'), input=('1',))
-            logger.info("trjconv for NPT to DRY PDB conversion command completed.")
-        else:
-            shutil.copy(os.path.join(out_folder, next_pdb), os.path.join(out_folder, "system.pdb"))
+            next_pdb = "npt.pdb"
+
+        gromacs.trjconv(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, 'system_dry.pdb'), s=os.path.join(out_folder, next_pdb), n=os.path.join(out_folder, 'index.ndx'), input=(index_group_name,))
+        logger.info(f"trjconv for {next_pdb} to DRY PDB conversion command completed.")
+        
+        gromacs.trjconv(f=os.path.join(out_folder, 'traj.xtc'), o=os.path.join(out_folder, 'traj_dry.xtc'), s=os.path.join(out_folder, 'system_dry.pdb'), 
+                        n=os.path.join(out_folder, 'index.ndx'), input=(index_group_name,))
+        logger.info(f"trjconv for traj.xtc to traj_dry.xtc conversion command completed.")
 
         # Convert npt.xtc to npt.dcd
-        traj = md.load(os.path.join(out_folder, 'traj.xtc'), top=os.path.join(out_folder, "system.pdb"))
-        traj.save_dcd(os.path.join(out_folder, 'traj.dcd'))
+        traj = md.load(os.path.join(out_folder, 'traj_dry.xtc'), top=os.path.join(out_folder, "system_dry.pdb"))
+        traj.save_dcd(os.path.join(out_folder, 'traj_dry.dcd'))
 
         logger.info("GROMACS simulation completed successfully.")
     except Exception as e:
@@ -200,7 +266,7 @@ def filterInitialPairsSingleCore(args):
     initPairFilterCutoff = args[2]
 
     with suppress_stdout():
-        system = parsePDB(os.path.join(outFolder, "system.pdb"))
+        system = parsePDB(os.path.join(outFolder, "system_dry.pdb"))
 
     # Define a method for initial filtering of a single pair.
     def filterInitialPair(pair):
@@ -240,7 +306,7 @@ def perform_initial_filtering(outFolder, source_sel, target_sel, initPairFilterC
     logger.info("Performing initial filtering...")
 
     # Get the path to the PDB file (system.pdb) from outFolder
-    pdb_file = os.path.join(outFolder, "system.pdb")
+    pdb_file = os.path.join(outFolder, "system_dry.pdb")
 
     # Parse PDB file
     system = parsePDB(pdb_file)
@@ -335,9 +401,9 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
     logger.info("Calculating interaction energies...")
 
     # Read necessary files from outFolder
-    pdb_file = os.path.join(outFolder, 'system.pdb')
-    top_file = os.path.join(outFolder, 'topol_protein.top')
-    xtc_file = os.path.join(outFolder, 'traj.xtc')
+    pdb_file = os.path.join(outFolder, 'system_dry.pdb')
+    top_file = os.path.join(outFolder, 'topol_dry.top')
+    xtc_file = os.path.join(outFolder, 'traj_dry.xtc')
 
     # Modify atom serial numbers to account for possible PDB files with more than 99999 atoms
     system = parsePDB(pdb_file)
@@ -360,7 +426,7 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
 
     # Write a standard .ndx file for GMX
     filename = os.path.join(outFolder, 'interact.ndx')
-    gromacs.make_ndx(f=os.path.join(outFolder, 'system.pdb'), o=filename, input=('q',))
+    gromacs.make_ndx(f=os.path.join(outFolder, 'system_dry.pdb'), o=filename, input=('q',))
 
     # Append our residue groups to this standard file!
     with open(filename, 'a') as f:
@@ -455,7 +521,7 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
     - logger (logging.Logger): The logger object for logging messages.
     """
 
-    system = parsePDB(os.path.join(outFolder, 'system.pdb'))
+    system = parsePDB(os.path.join(outFolder, 'system_dry.pdb'))
     
     logger.info('Parsing GMX energy output... This may take a while...')
     df = panedr.edr_to_df(os.path.join(outFolder, 'interact0.edr'))
@@ -658,8 +724,8 @@ def source_gmxrc(gmxrc_path):
     
     return gmx_env_vars
 
-def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_pair_filter_cutoff, top=False, toppar=False, nointeraction=False, solvate=False, npt=False, 
-                       source_sel="all", target_sel="all", nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC',
+def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_pair_filter_cutoff, nofixpdb=False, top=False, toppar=False, nointeraction=False, solvate=False, npt=False, 
+                       source_sel="all", target_sel="all", lig=False, lig_gro_file=None, lig_itp_file=None, nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC',
                        noconsole_handler=False):
 
     start_time = time.time()  # Start the timer
@@ -688,12 +754,15 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
 
     logger = create_logger(out_folder, noconsole_handler)
     logger.info('### gRINN workflow started ###')
+    # Print the command-line used to call this workflow to the log file
+    logger.info('gRINN workflow was called as follows: ')
+    logger.info(' '.join(sys.argv))
 
     # Check whether a topology file as well as toppar folder is provided
     if top and toppar:
         logger.info('Topology file and toppar folder provided. Using provided topology file and toppar folder.')
         logger.info('Copying topology file to output folder...')
-        shutil.copy(top, os.path.join(out_folder, 'topol_protein.top'))
+        shutil.copy(top, os.path.join(out_folder, 'topol_dry.top'))
         logger.info('Copying toppar folder to output folder...')
         shutil.copytree(toppar, os.path.join(out_folder, 'toppar'))
         logger.info('Copying input pdb_file to output_folder as "system.pdb"...')
@@ -702,7 +771,7 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
         gromacs.trjconv(f=os.path.join(out_folder, 'system.pdb'), o=os.path.join(out_folder, 'traj.xtc'))
 
     else:
-        run_gromacs_simulation(pdb_file, mdp_files_folder, out_folder, ff_folder, solvate, npt, logger, nt)
+        run_gromacs_simulation(pdb_file, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt)
     
     if nointeraction:
         logger.info('Not calculating interaction energies as per user request.')
@@ -727,6 +796,7 @@ def parse_args():
     parser.add_argument("pdb_file", type=str, help="Input PDB file")
     parser.add_argument("mdp_files_folder", type=str, help="Folder containing the MDP files")
     parser.add_argument("out_folder", type=str, help="Output folder")
+    parser.add_argument("--nofixpdb", action="store_true", help="Fix PDB file using pdbfixer")
     parser.add_argument("--initpairfiltercutoff", type=float, default=10, help="Initial pair filter cutoff (default is 10)")
     parser.add_argument("--nointeraction", action="store_true", help="Do not calculate interaction energies")
     parser.add_argument("--solvate", action="store_true", help="Run solvation")
@@ -739,12 +809,15 @@ def parse_args():
     parser.add_argument("--ff_folder", type=str, help="Folder containing the force field files")
     parser.add_argument('--top', type=str, help='Topology file')
     parser.add_argument('--toppar', type=str, help='Toppar folder')
+    parser.add_argument('--lig', action='store_true', help='Ligand mode')
+    parser.add_argument('--lig_gro_file', type=str, help='Ligand gro file')
+    parser.add_argument('--lig_itp_file', type=str, help='Ligand itp file')
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    run_grinn_workflow(args.pdb_file, args.mdp_files_folder, args.out_folder, args.ff_folder, args.initpairfiltercutoff, args.top, args.toppar, args.nointeraction, args.solvate, args.npt, 
-                       args.source_sel, args.target_sel, args.nt, args.gmxrc_path, args.noconsole_handler)
+    run_grinn_workflow(args.pdb_file, args.mdp_files_folder, args.out_folder, args.ff_folder, args.initpairfiltercutoff, args.nofixpdb, args.top, args.toppar, args.nointeraction, args.solvate, args.npt, 
+                       args.source_sel, args.target_sel, args.lig, args.lig_gro_file, args.lig_itp_file, args.nt, args.gmxrc_path, args.noconsole_handler)
 
 if __name__ == "__main__":
     main()# %%
