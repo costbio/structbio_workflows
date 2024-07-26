@@ -4,7 +4,7 @@ from prody import LOGGER
 import numpy as np
 import itertools
 from itertools import islice
-from concurrent import futures
+import concurrent.futures
 import pyprind
 from contextlib import contextmanager
 import os, sys, pickle, shutil, pexpect, time, subprocess, panedr, pandas, glob
@@ -22,7 +22,6 @@ import argparse
 # level messages on the terminal.
 LOGGER._logger.setLevel(logging.FATAL)
 
-# %%
 def create_logger(outFolder, noconsoleHandler=False):
     """
     Create a logger with specified configuration.
@@ -63,7 +62,6 @@ def create_logger(outFolder, noconsoleHandler=False):
 
     return logger
 
-# %%
 def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt=1):
     """
     Run a GROMACS simulation workflow.
@@ -171,8 +169,13 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
             # Create the name of the group for the protein+ligand complex for the index file.
             index_group_select = f'"Protein" | "{lig_code}"'
             index_group_name = f"Protein_{lig_code}"
-        
-        gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=(index_group_select,'q'))
+            gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=(index_group_select,'q'))
+
+        else:
+            index_group_select = 'Protein'
+            index_group_name = "Protein"
+            gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=('q'))
+
         
         shutil.copy(os.path.join(out_folder, "topol.top"), os.path.join(out_folder, "topol_dry.top"))
         logger.info("Topology file copied.")
@@ -247,7 +250,6 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
     except Exception as e:
         logger.error(f"Error encountered during GROMACS simulation: {str(e)}")
 
-# %%
 # A method for suppressing terminal output temporarily.
 @contextmanager
 def suppress_stdout():
@@ -259,7 +261,6 @@ def suppress_stdout():
         finally:
             sys.stdout = old_stdout
 
-# %%
 def filterInitialPairsSingleCore(args):
     outFolder = args[0]
     pairs = args[1]
@@ -289,7 +290,6 @@ def filterInitialPairsSingleCore(args):
 
     return filterList
 
-# %%
 def perform_initial_filtering(outFolder, source_sel, target_sel, initPairFilterCutoff, numCores, logger):
     """
     Perform initial filtering of residue pairs based on distance.
@@ -341,7 +341,7 @@ def perform_initial_filtering(outFolder, source_sel, target_sel, initPairFilterC
     pairChunks = np.array_split(list(pairSet), numCores)
 
     # Start a concurrent futures pool, and perform initial filtering.
-    with futures.ProcessPoolExecutor(numCores) as pool:
+    with concurrent.futures.ProcessPoolExecutor(numCores) as pool:
         try:
             initialFilter = pool.map(filterInitialPairsSingleCore, [[outFolder, pairChunks[i], initPairFilterCutoff] for i in range(0, numCores)])
             initialFilter = list(initialFilter)
@@ -366,7 +366,6 @@ def perform_initial_filtering(outFolder, source_sel, target_sel, initPairFilterC
 
     return initialFilter
 
-# %%
 # A method to get a string containing chain or seg ID, residue name and residue number
 # given a ProDy parsed PDB Atom Group and the residue index
 def getChainResnameResnum(pdb,resIndex):
@@ -385,7 +384,19 @@ def getChainResnameResnum(pdb,resIndex):
 		string = ''.join([segid,str(resName),str(resNum)])
 	return [chain,segid,resName,resNum,string]
 
-# %%
+def process_chunk(i, chunk, outFolder, top_file, pdb_file, xtc_file):
+    mdpFile = os.path.join(outFolder, f'interact{i}.mdp')
+    tprFile = mdpFile.rstrip('.mdp') + '.tpr'
+    edrFile = mdpFile.rstrip('.mdp') + '.edr'
+
+    gromacs.environment.flags['capture_output_filename'] = os.path.join(outFolder, f"gromacs_interaction{i}.log")
+
+    with suppress_stdout():
+        gromacs.grompp(f=mdpFile, n=os.path.join(outFolder, 'interact.ndx'), p=top_file, c=pdb_file, o=tprFile, maxwarn=20)
+        gromacs.mdrun(v=True, s=tprFile, c=pdb_file, e=edrFile, g=os.path.join(outFolder, f'interact{i}.log'), nt=1, pin='on', rerun=xtc_file)
+
+    return edrFile, chunk
+
 def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger):
     """
     Calculate interaction energies for residue pairs.
@@ -491,26 +502,32 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
         mdpFiles.append(filename)
         i += 1
 
-    # Call gromacs pre-processor (grompp) and make a new TPR file for each pair
-    edrFiles = []
-    for i, chunk in enumerate(pairsFilteredChunks):
-        mdpFile = os.path.join(outFolder, f'interact{i}.mdp')
-        tprFile = mdpFile.rstrip('.mdp') + '.tpr'
-        edrFile = mdpFile.rstrip('.mdp') + '.edr'
+    def parallel_process_chunks(pairsFilteredChunks, outFolder, top_file, pdb_file, xtc_file, numCoresIE, logger):
+        edrFiles = []
+        pairsFilteredChunksProcessed = []
 
-        gromacs.grompp(f=mdpFile, n=os.path.join(outFolder, 'interact.ndx'), p=top_file, c=pdb_file, o=tprFile, maxwarn=20)
+        max_workers = min(numCoresIE, len(pairsFilteredChunks))  # Adjust max_workers to a smaller number if needed
 
-        gromacs.mdrun(v=True, s=tprFile, c=pdb_file, e=edrFile, nt=numCoresIE, pin='on', rerun=xtc_file)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(process_chunk, i, chunk, outFolder, top_file, pdb_file, xtc_file)
+                for i, chunk in enumerate(pairsFilteredChunks)
+            ]
 
-        edrFiles.append(edrFile)
+            j = 0
+            for future in concurrent.futures.as_completed(futures):
+                edrFile, chunk = future.result()
+                edrFiles.append(edrFile)
+                pairsFilteredChunksProcessed.append(chunk)
+                j += 1
 
-        subprocess.Popen(['rm', 'md.log']).wait()
+                logger.info('Completed calculation percentage: ' + str((j) / len(futures) * 100))
 
-        logger.info('Completed calculation percentage: ' + str((i + 1) / len(mdpFiles) * 100))
+        return edrFiles, pairsFilteredChunksProcessed
+    
+    edrFiles, pairsFilteredChunksProcessed = parallel_process_chunks(pairsFilteredChunks, outFolder, top_file, pdb_file, xtc_file, numCoresIE, logger)
+    return edrFiles, pairsFilteredChunksProcessed
 
-    return edrFiles, pairsFilteredChunks
-
-# %%
 def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger):
     """
     Parse interaction energies from EDR files and save the results.
@@ -558,9 +575,9 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
             elif column_stringLJSR2 in df.columns:
                 column_stringLJSR = column_stringLJSR2
             else:
-                logger.exception('At least one required residue interaction was not found in the pair interaction '
-                                 'energy output. Please contact the developer.')
-                raise SystemExit(0)
+                logger.warning(f'Pair {column_stringLJSR1} or {column_stringLJSR2} was not found in the pair interaction '
+                                 'energy output.')
+                continue
 
             # Lennard-Jones 1-4 interaction
             column_stringLJ141 = 'LJ-14:res%i-res%i' % (pair[0], pair[1])
@@ -570,9 +587,9 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
             elif column_stringLJ142 in df.columns:
                 column_stringLJ14 = column_stringLJ142
             else:
-                logger.exception('At least one required residue interaction was not found in the pair interaction '
-                                 'energy output. Please contact the developer.')
-                raise SystemExit(0)
+                logger.warning(f'Pair {column_stringLJ141} or {column_stringLJ142} was not found in the pair interaction '
+                                 'energy output.')
+                continue
 
             # Coulombic Short Range interaction
             column_stringCoulSR1 = 'Coul-SR:res%i-res%i' % (pair[0], pair[1])
@@ -582,9 +599,9 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
             elif column_stringCoulSR2 in df.columns:
                 column_stringCoulSR = column_stringCoulSR2
             else:
-                logger.exception('At least one required residue interaction was not found in the pair interaction '
-                                 'energy output. Please contact the developer.')
-                raise SystemExit(0)
+                logger.warning(f'Pair {column_stringCoulSR1} or {column_stringCoulSR2} was not found in the pair interaction '
+                                 'energy output.')
+                continue
 
             # Coulombic Short Range interaction
             column_stringCoul141 = 'Coul-14:res%i-res%i' % (pair[0], pair[1])
@@ -594,9 +611,9 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
             elif column_stringCoul142 in df.columns:
                 column_stringCoul14 = column_stringCoul142
             else:
-                logger.exception('At least one required residue interaction was not found in the pair interaction '
-                                 'energy output. Please contact the developer.')
-                raise SystemExit(0)
+                logger.warning(f'Pair {column_stringCoul141} or {column_stringCoul142} was not found in the pair interaction '
+                                 'energy output.')
+                continue
 
             # Convert energy units from kJ/mol to kcal/mol
             kj2kcal = 0.239005736
@@ -629,14 +646,30 @@ def parse_interaction_energies(edrFiles, pairsFilteredChunks, outFolder, logger)
     logger.info('Collecting results...')
 
     # Prepare data tables from parsed energies and save to files
-    df_total = pd.DataFrame()
-    df_elec = pd.DataFrame()
-    df_vdw = pd.DataFrame()
+    total_data = {}
+    elec_data = {}
+    vdw_data = {}
 
+    # Collect data into dictionaries
     for key, value in energiesDict.items():
-        df_total[key] = value['Total']
-        df_elec[key] = value['Elec']
-        df_vdw[key] = value['VdW']
+        total_data[key] = value['Total']
+        elec_data[key] = value['Elec']
+        vdw_data[key] = value['VdW']
+
+    # Convert dictionaries to DataFrames using pd.concat
+    df_total = pd.DataFrame(total_data)
+    df_elec = pd.DataFrame(elec_data)
+    df_vdw = pd.DataFrame(vdw_data)
+
+    # If necessary, copy the DataFrames to defragment them
+    df_total = df_total.copy()
+    df_elec = df_elec.copy()
+    df_vdw = df_vdw.copy()
+
+    # Take transpose of the DataFrames
+    df_total = df_total.transpose()
+    df_elec = df_elec.transpose()
+    df_vdw = df_vdw.transpose()
 
     logger.info('Saving results to ' + os.path.join(outFolder, 'energies_intEnTotal.csv'))
     df_total.to_csv(os.path.join(outFolder, 'energies_intEnTotal.csv'))
@@ -679,6 +712,9 @@ def cleanUp(outFolder, logger):
 
     # Delete all NAMD-generated energies file from output folder
     for item in glob.glob(os.path.join(outFolder, '*_energies.log')):
+        os.remove(item)
+
+    for item in glob.glob(os.path.join(outFolder, 'gromacs_*.log')):
         os.remove(item)
 
     for item in glob.glob(os.path.join(outFolder, '*temp*')):
@@ -724,9 +760,9 @@ def source_gmxrc(gmxrc_path):
     
     return gmx_env_vars
 
-def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_pair_filter_cutoff, nofixpdb=False, top=False, toppar=False, nointeraction=False, solvate=False, npt=False, 
-                       source_sel="all", target_sel="all", lig=False, lig_gro_file=None, lig_itp_file=None, nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC',
-                       noconsole_handler=False):
+def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_pair_filter_cutoff, nofixpdb=False, top=False, toppar=False, 
+                       traj=False, nointeraction=False, solvate=False, npt=False, source_sel="all", target_sel="all", lig=False, lig_gro_file=None, 
+                       lig_itp_file=None, nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC', noconsole_handler=False):
 
     start_time = time.time()  # Start the timer
     gmx_env_vars = source_gmxrc(gmxrc_path)
@@ -770,6 +806,12 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
         logger.info('Generating traj.xtc file from input pdb_file...')
         gromacs.trjconv(f=os.path.join(out_folder, 'system_dry.pdb'), o=os.path.join(out_folder, 'traj_dry.xtc'))
 
+        # Check whether also a trajectory file is provided
+        if traj:
+            logger.info('Trajectory file provided. Using provided trajectory file.')
+            logger.info('Copying trajectory file to output folder...')
+            shutil.copy(traj, os.path.join(out_folder, 'traj_dry.xtc'))
+
     else:
         run_gromacs_simulation(pdb_file, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt)
     
@@ -809,6 +851,7 @@ def parse_args():
     parser.add_argument("--ff_folder", type=str, help="Folder containing the force field files")
     parser.add_argument('--top', type=str, help='Topology file')
     parser.add_argument('--toppar', type=str, help='Toppar folder')
+    parser.add_argument('--traj', type=str, help='Trajectory file')
     parser.add_argument('--lig', action='store_true', help='Ligand mode')
     parser.add_argument('--lig_gro_file', type=str, help='Ligand gro file')
     parser.add_argument('--lig_itp_file', type=str, help='Ligand itp file')
@@ -816,8 +859,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    run_grinn_workflow(args.pdb_file, args.mdp_files_folder, args.out_folder, args.ff_folder, args.initpairfiltercutoff, args.nofixpdb, args.top, args.toppar, args.nointeraction, args.solvate, args.npt, 
-                       args.source_sel, args.target_sel, args.lig, args.lig_gro_file, args.lig_itp_file, args.nt, args.gmxrc_path, args.noconsole_handler)
+    run_grinn_workflow(args.pdb_file, args.mdp_files_folder, args.out_folder, args.ff_folder, args.initpairfiltercutoff, args.nofixpdb, args.top, args.toppar, args.traj,
+                       args.nointeraction, args.solvate, args.npt, args.source_sel, args.target_sel, args.lig, args.lig_gro_file, args.lig_itp_file, args.nt, 
+                       args.gmxrc_path, args.noconsole_handler)
 
 if __name__ == "__main__":
     main()# %%
