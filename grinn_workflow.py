@@ -6,6 +6,7 @@ import itertools
 from itertools import islice
 import concurrent.futures
 import pyprind
+import signal
 from contextlib import contextmanager
 import os, sys, pickle, shutil, pexpect, time, subprocess, panedr, pandas, glob
 import logging
@@ -17,6 +18,9 @@ from openmm.app import PDBFile
 import mdtraj as md
 import pandas as pd
 import argparse
+
+# Global variable to store the process group ID
+pgid = os.getpgid(os.getpid())
 
 # Directly modifying logging level for ProDy to prevent printing of noisy debug/warning
 # level messages on the terminal.
@@ -389,11 +393,11 @@ def process_chunk(i, chunk, outFolder, top_file, pdb_file, xtc_file):
     tprFile = mdpFile.rstrip('.mdp') + '.tpr'
     edrFile = mdpFile.rstrip('.mdp') + '.edr'
 
+    gromacs.environment.flags['capture_output'] = "file"
     gromacs.environment.flags['capture_output_filename'] = os.path.join(outFolder, f"gromacs_interaction{i}.log")
 
-    with suppress_stdout():
-        gromacs.grompp(f=mdpFile, n=os.path.join(outFolder, 'interact.ndx'), p=top_file, c=pdb_file, o=tprFile, maxwarn=20)
-        gromacs.mdrun(v=True, s=tprFile, c=pdb_file, e=edrFile, g=os.path.join(outFolder, f'interact{i}.log'), nt=1, pin='on', rerun=xtc_file)
+    gromacs.grompp(f=mdpFile, n=os.path.join(outFolder, 'interact.ndx'), p=top_file, c=pdb_file, o=tprFile, maxwarn=20)
+    gromacs.mdrun(s=tprFile, c=pdb_file, e=edrFile, g=os.path.join(outFolder, f'interact{i}.log'), nt=1, rerun=xtc_file)
 
     return edrFile, chunk
 
@@ -410,6 +414,9 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
     - edrFiles (list): List of paths to the EDR files generated during calculation.
     """
     logger.info("Calculating interaction energies...")
+
+    gromacs.environment.flags['capture_output'] = "file"
+    gromacs.environment.flags['capture_output_filename'] = os.path.join(out_folder, "gromacs.log")
 
     # Read necessary files from outFolder
     pdb_file = os.path.join(outFolder, 'system_dry.pdb')
@@ -502,6 +509,12 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
         mdpFiles.append(filename)
         i += 1
 
+    def start_subprocess(command):
+        return subprocess.Popen(command, preexec_fn=os.setsid, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def terminate_process_group(pgid):
+        os.killpg(pgid, signal.SIGTERM)
+
     def parallel_process_chunks(pairsFilteredChunks, outFolder, top_file, pdb_file, xtc_file, numCoresIE, logger):
         edrFiles = []
         pairsFilteredChunksProcessed = []
@@ -514,6 +527,23 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
                 for i, chunk in enumerate(pairsFilteredChunks)
             ]
 
+            def signal_handler(sig, frame):
+                print('Signal caught. Shutting down...')
+                executor.shutdown(wait=False)
+                for future in futures:
+                    if future.running():
+                        # Attempt to kill the process group of the future
+                        try:
+                            pid = future.result().pid
+                            pgid = os.getpgid(pid)
+                            terminate_process_group(pgid)
+                        except Exception as e:
+                            logger.error(f"Error terminating process group: {e}")
+                sys.exit(0)
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            
             j = 0
             for future in concurrent.futures.as_completed(futures):
                 edrFile, chunk = future.result()
@@ -762,7 +792,8 @@ def source_gmxrc(gmxrc_path):
 
 def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_pair_filter_cutoff, nofixpdb=False, top=False, toppar=False, 
                        traj=False, nointeraction=False, solvate=False, npt=False, source_sel="all", target_sel="all", lig=False, lig_gro_file=None, 
-                       lig_itp_file=None, nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC', noconsole_handler=False):
+                       lig_itp_file=None, nt=1, gmxrc_path='/usr/local/gromacs/bin/GMXRC', noconsole_handler=False,
+                       include_files=False):
 
     start_time = time.time()  # Start the timer
     gmx_env_vars = source_gmxrc(gmxrc_path)
@@ -794,23 +825,34 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
     logger.info('gRINN workflow was called as follows: ')
     logger.info(' '.join(sys.argv))
 
+    # If any include files are listed. 
+    if include_files:
+        logger.info('Include files provided. Copying include files to output folder...')
+        for include_file in include_files:
+            shutil.copy(include_file, os.path.join(out_folder, os.path.basename(include_file)))
+
     # Check whether a topology file as well as toppar folder is provided
-    if top and toppar:
-        logger.info('Topology file and toppar folder provided. Using provided topology file and toppar folder.')
+    if top:
+        logger.info('Topology file provided. Using provided topology file.')
         logger.info('Copying topology file to output folder...')
         shutil.copy(top, os.path.join(out_folder, 'topol_dry.top'))
-        logger.info('Copying toppar folder to output folder...')
-        shutil.copytree(toppar, os.path.join(out_folder, 'toppar'))
+
+        if toppar:
+            logger.info('Toppar folder provided. Using provided toppar folder.')
+            logger.info('Copying toppar folder to output folder...')
+            shutil.copytree(toppar, os.path.join(out_folder, 'toppar'))
+
         logger.info('Copying input pdb_file to output_folder as "system.pdb"...')
         shutil.copy(pdb_file, os.path.join(out_folder, 'system_dry.pdb'))
-        logger.info('Generating traj.xtc file from input pdb_file...')
-        gromacs.trjconv(f=os.path.join(out_folder, 'system_dry.pdb'), o=os.path.join(out_folder, 'traj_dry.xtc'))
 
         # Check whether also a trajectory file is provided
         if traj:
             logger.info('Trajectory file provided. Using provided trajectory file.')
             logger.info('Copying trajectory file to output folder...')
             shutil.copy(traj, os.path.join(out_folder, 'traj_dry.xtc'))
+        else:
+            logger.info('Generating traj.xtc file from input pdb_file...')
+            gromacs.trjconv(f=os.path.join(out_folder, 'system_dry.pdb'), o=os.path.join(out_folder, 'traj_dry.xtc'))
 
     else:
         run_gromacs_simulation(pdb_file, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt)
@@ -855,13 +897,21 @@ def parse_args():
     parser.add_argument('--lig', action='store_true', help='Ligand mode')
     parser.add_argument('--lig_gro_file', type=str, help='Ligand gro file')
     parser.add_argument('--lig_itp_file', type=str, help='Ligand itp file')
+    parser.add_argument('--include_files', nargs='+', type=str, help='Include files')
     return parser.parse_args()
 
 def main():
+
     args = parse_args()
     run_grinn_workflow(args.pdb_file, args.mdp_files_folder, args.out_folder, args.ff_folder, args.initpairfiltercutoff, args.nofixpdb, args.top, args.toppar, args.traj,
                        args.nointeraction, args.solvate, args.npt, args.source_sel, args.target_sel, args.lig, args.lig_gro_file, args.lig_itp_file, args.nt, 
-                       args.gmxrc_path, args.noconsole_handler)
+                       args.gmxrc_path, args.noconsole_handler, args.include_files)
 
 if __name__ == "__main__":
-    main()# %%
+    def global_signal_handler(sig, frame):
+            print('Signal caught in main. Exiting...')
+            sys.exit(0)
+
+    signal.signal(signal.SIGINT, global_signal_handler)
+    signal.signal(signal.SIGTERM, global_signal_handler)
+    main()
