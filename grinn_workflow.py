@@ -766,9 +766,9 @@ def run_grinn_workflow(pdb_file, mdp_files_folder, out_folder, ff_folder, init_p
         logger.info('Copying toppar folder to output folder...')
         shutil.copytree(toppar, os.path.join(out_folder, 'toppar'))
         logger.info('Copying input pdb_file to output_folder as "system.pdb"...')
-        shutil.copy(pdb_file, os.path.join(out_folder, 'system.pdb'))
+        shutil.copy(pdb_file, os.path.join(out_folder, 'system_dry.pdb'))
         logger.info('Generating traj.xtc file from input pdb_file...')
-        gromacs.trjconv(f=os.path.join(out_folder, 'system.pdb'), o=os.path.join(out_folder, 'traj.xtc'))
+        gromacs.trjconv(f=os.path.join(out_folder, 'system_dry.pdb'), o=os.path.join(out_folder, 'traj_dry.xtc'))
 
     else:
         run_gromacs_simulation(pdb_file, mdp_files_folder, out_folder, ff_folder, nofixpdb, solvate, npt, lig, lig_gro_file, lig_itp_file, logger, nt)
