@@ -416,7 +416,7 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
     logger.info("Calculating interaction energies...")
 
     gromacs.environment.flags['capture_output'] = "file"
-    gromacs.environment.flags['capture_output_filename'] = os.path.join(out_folder, "gromacs.log")
+    gromacs.environment.flags['capture_output_filename'] = os.path.join(outFolder, "gromacs.log")
 
     # Read necessary files from outFolder
     pdb_file = os.path.join(outFolder, 'system_dry.pdb')
