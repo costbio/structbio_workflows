@@ -122,30 +122,88 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
 
         if lig:
             logger.info("Running ligand mode...")
+        
+        # Paths for output files
             lig_itp_outfolder_path = os.path.join(out_folder, "ligand.itp")
-            lig_itp_outfolder_path = os.path.abspath(lig_itp_outfolder_path)
             lig_gro_outfolder_path = os.path.join(out_folder, "ligand.gro")
-            lig_gro_outfolder_path = os.path.abspath(lig_gro_outfolder_path)
             lig_pdb_outfolder_path = os.path.join(out_folder, "ligand.pdb")
-            lig_pdb_outfolder_path = os.path.abspath(lig_pdb_outfolder_path)
-            shutil.copy(lig_gro_file, lig_gro_outfolder_path)
-            shutil.copy(lig_itp_file, lig_itp_outfolder_path)
-            logger.info("Ligand gro and itp files copied.")
-            # Convert gro of ligand to pdb
+
+        # Standardize ligand name in the input .gro and .itp files
+            def standardize_ligand_files(gro_file_path, itp_file_path, standard_name="lig"):
+            # Ensure the standard_name is exactly 5 characters (right-aligned)
+                standard_name = standard_name.rjust(5)
+
+                # Update the .gro file
+                with open(gro_file_path, 'r') as file:
+                    gro_lines = file.readlines()
+                
+                # Identify and replace the residue name in each atom line of the .gro file
+                updated_gro_lines = []
+                for line in gro_lines:
+                    if len(line.strip()) > 0 and line[0].isdigit():  # Check if line is an atom entry (starts with a digit)
+                        # Replace the residue name (characters 6-10)
+                        updated_line = line[:5] + standard_name + line[10:]
+                        updated_gro_lines.append(updated_line)
+                    else:
+                        updated_gro_lines.append(line)
+                
+                # Write the updated content to a new .gro file
+                temp_gro_path = os.path.join(out_folder, "temp_ligand.gro")
+                with open(temp_gro_path, 'w') as file:
+                    file.writelines(updated_gro_lines)
+
+                # Update the .itp file
+                with open(itp_file_path, 'r') as file:
+                    itp_lines = file.readlines()
+                
+                # Find the first non-comment string after [ moleculetype ] and update it
+                updated_itp_lines = []
+                in_moleculetype = False
+                for line in itp_lines:
+                    stripped_line = line.strip()
+                    if stripped_line.startswith("[ moleculetype ]"):
+                        in_moleculetype = True
+                        updated_itp_lines.append(line)
+                    elif in_moleculetype and stripped_line and not stripped_line.startswith(";"):
+                        current_itp_name = stripped_line.split()[0]
+                        updated_itp_lines.append(line.replace(current_itp_name, standard_name.strip(), 1))
+                        in_moleculetype = False
+                    else:
+                        updated_itp_lines.append(line)
+                
+                # Write the updated content to a new .itp file
+                temp_itp_path = os.path.join(out_folder, "temp_ligand.itp")
+                with open(temp_itp_path, 'w') as file:
+                    file.writelines(updated_itp_lines)
+
+                return temp_gro_path, temp_itp_path
+
+
+        # Standardize the names and get paths to the updated files
+            standardized_gro_file, standardized_itp_file = standardize_ligand_files(lig_gro_file, lig_itp_file)
+
+        # Copy the corrected files to the output folder
+            shutil.copy(standardized_gro_file, lig_gro_outfolder_path)
+            shutil.copy(standardized_itp_file, lig_itp_outfolder_path)
+            logger.info("Ligand gro and itp files copied with standardized ligand name.")
+
+        # Convert the .gro of ligand to .pdb
             gromacs.editconf(f=lig_gro_outfolder_path, o=lig_pdb_outfolder_path)
             logger.info("Ligand gro file converted to pdb.")
-            # Create protein-ligand complex
+        
+        # Create protein-ligand complex
             protein = parsePDB(os.path.join(out_folder, "protein.pdb"))
             ligand = parsePDB(os.path.join(out_folder, "ligand.pdb"))
             lig_chids = ligand.getChids()
             lig_code = ligand.getResnames()[0]
-            # Set "Z" as chain ID for ligand as a chain id is required in later stages of the workflow.
-            ligand.setChids(['Z']*len(lig_chids))
+        
+        # Set "Z" as chain ID for ligand
+            ligand.setChids(['Z'] * len(lig_chids))
             complex = protein + ligand
             writePDB(os.path.join(out_folder, "complex.pdb"), complex)
             logger.info("Protein-ligand complex created.")
 
-            # Supplement topology file with ligand topology
+        # Supplement topology file with ligand topology
             f = open(os.path.join(out_folder, "topol.top"), "r")
             topol_lines = f.readlines()
             f.close()
@@ -162,7 +220,7 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
                     stop_write = True
 
             new_lines.append(f"{lig_code}     1\n")
-
+        
             f = open(os.path.join(out_folder, "topol.top"), "w")
             f.writelines(new_lines)
             f.close()
@@ -170,10 +228,10 @@ def run_gromacs_simulation(pdb_filepath, mdp_files_folder, out_folder, ff_folder
 
             next_pdb = "complex.pdb"
 
-            # Create the name of the group for the protein+ligand complex for the index file.
+        # Create the name of the group for the protein+ligand complex for the index file.
             index_group_select = f'"Protein" | "{lig_code}"'
             index_group_name = f"Protein_{lig_code}"
-            gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=(index_group_select,'q'))
+            gromacs.make_ndx(f=os.path.join(out_folder, next_pdb), o=os.path.join(out_folder, "index.ndx"), input=(index_group_select, 'q'))
 
         else:
             index_group_select = 'Protein'
@@ -373,20 +431,20 @@ def perform_initial_filtering(outFolder, source_sel, target_sel, initPairFilterC
 # A method to get a string containing chain or seg ID, residue name and residue number
 # given a ProDy parsed PDB Atom Group and the residue index
 def getChainResnameResnum(pdb,resIndex):
-	# Get a string for chain+resid+resnum when supplied the residue index.
-	selection = pdb.select('resindex %i' % resIndex)
-	chain = selection.getChids()[0]
-	chain = chain.strip(' ')
-	segid = selection.getSegnames()[0]
-	segid = segid.strip(' ')
+    # Get a string for chain+resid+resnum when supplied the residue index.
+    selection = pdb.select('resindex %i' % resIndex)
+    chain = selection.getChids()[0]
+    chain = chain.strip(' ')
+    segid = selection.getSegnames()[0]
+    segid = segid.strip(' ')
 
-	resName = selection.getResnames()[0]
-	resNum = selection.getResnums()[0]
-	if chain:
-		string = ''.join([chain,str(resName),str(resNum)])
-	elif segid:
-		string = ''.join([segid,str(resName),str(resNum)])
-	return [chain,segid,resName,resNum,string]
+    resName = selection.getResnames()[0]
+    resNum = selection.getResnums()[0]
+    if chain:
+        string = ''.join([chain,str(resName),str(resNum)])
+    elif segid:
+        string = ''.join([segid,str(resName),str(resNum)])
+    return [chain,segid,resName,resNum,string]
 
 def process_chunk(i, chunk, outFolder, top_file, pdb_file, xtc_file):
     mdpFile = os.path.join(outFolder, f'interact{i}.mdp')
@@ -500,7 +558,7 @@ def calculate_interaction_energies(outFolder, initialFilter, numCoresIE, logger)
 
         # GOTTA COMMENT OUT THE FOLLOWING DUE TO TOO LONG LINE ERROR IN GROMPP
         # for key in allSerials:
-        # 	energygrpExclString += ' res%i res%i' % (key,key)
+        #     energygrpExclString += ' res%i res%i' % (key,key)
 
         #energygrpExclString += ' SOL SOL'
         #f.write(energygrpExclString)
